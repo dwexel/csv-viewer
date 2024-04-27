@@ -44,7 +44,8 @@ struct MyApp {
     selection: std::collections::HashSet<usize>,
     checked: bool,
 
-    records: Vec<StringRecord>
+    records: Vec<StringRecord>,
+    headers: Option<StringRecord>
 }
 
 impl Default for MyApp {
@@ -63,7 +64,8 @@ impl Default for MyApp {
             selection: Default::default(),
             checked: false,       
 
-            records: Vec::new()
+            records: Vec::new(),
+            headers: None
         }
     }
 }
@@ -121,15 +123,18 @@ impl eframe::App for MyApp {
 
 impl MyApp {
     fn from_path(p: &str) -> Self {
-        let rdr = csv::Reader::from_path(p).unwrap();
-        let mut records = Vec::new();
+        let mut rdr = csv::Reader::from_path(p).unwrap();
+        let headers = rdr.headers().unwrap().clone();
 
+
+        let mut records = Vec::new();
         for record in rdr.into_records() {
             records.push(record.unwrap());
         }
 
 
         Self {
+            headers: Some(headers),
             records: records,
             ..Default::default()
         }
@@ -160,21 +165,25 @@ impl MyApp {
 
         table
             .header(20.0, |mut header| {
-                header.col(|ui| {
-                    ui.strong("Row");
-                });
-                header.col(|ui| {
-                    ui.strong("Interaction");
-                });
-                header.col(|ui| {
-                    ui.strong("Expanding content");
-                });
-                header.col(|ui| {
-                    ui.strong("Clipped text");
-                });
-                header.col(|ui| {
-                    ui.strong("Content");
-                });
+                if let Some(headers) = &self.headers {
+                    header.col(|ui| {
+                        ui.strong("Row");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Interaction");
+                    });
+                    header.col(|ui| {
+                        ui.strong(headers.get(0).expect("col 0"));
+                    });
+                    header.col(|ui| {
+                        ui.strong(headers.get(1).expect("col 1"));
+                    });
+                    header.col(|ui| {
+                        ui.strong(headers.get(2).expect("col 2"));
+                    });
+                            
+    
+                }
             })
             .body(|body| {
                 // temporary 10 rows
@@ -202,17 +211,17 @@ impl MyApp {
                     }
 
 
-                    row.col(|ui| {
-                        expanding_content(ui);
-                    });
-                    row.col(|ui| {
-                        ui.label(long_text(row_index));
-                    });
-                    row.col(|ui| {
-                        ui.add(
-                            egui::Label::new("Thousands of rows of even height").wrap(false),
-                        );
-                    });
+                    // row.col(|ui| {
+                    //     expanding_content(ui);
+                    // });
+                    // row.col(|ui| {
+                    //     ui.label(long_text(row_index));
+                    // });
+                    // row.col(|ui| {
+                    //     ui.add(
+                    //         egui::Label::new("Thousands of rows of even height").wrap(false),
+                    //     );
+                    // });
                 
                 });
 
