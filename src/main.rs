@@ -3,17 +3,24 @@
 
 use eframe::egui;
 use csv::{self, StringRecord};
-use std::{default, error::Error, io, process};
+use egui::Color32;
+use std::{
+    sync::Arc
+};
+use nucleo::{
+    Config, 
+    Nucleo, 
+    pattern::CaseMatching,
+    pattern::Normalization
+};
 
 
-
+// i have the feeling that the indices for individual values should be stored in hash maps
 
 fn main() -> Result<(), eframe::Error> {
-
-
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([320.0, 240.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([500.0, 600.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -22,8 +29,6 @@ fn main() -> Result<(), eframe::Error> {
         Box::new(|_cc| {
             // This gives us image support:
             // egui_extras::install_image_loaders(&cc.egui_ctx);
-
-
             let app = MyApp::from_path("src/test.csv");
             Box::<MyApp>::new(app)
         }),
@@ -38,14 +43,33 @@ struct MyApp {
     resizable: bool,
     clickable: bool,
 
-    // num_rows: usize,
+    num_rows: usize,
     // scroll_to_row_slider: usize,
     // scroll_to_row: Option<usize>,
-    selection: std::collections::HashSet<usize>,
+    
+    //selection: std::collections::HashSet<usize>,
+    
     checked: bool,
 
-    records: Vec<StringRecord>,
-    headers: Option<StringRecord>
+    // records: Vec<StringRecord>,
+
+    headers: Option<StringRecord>,
+
+    input_buffer: Vec<String>,
+
+
+    // matcher: Matcher,
+
+    // indices to include 
+    // idk if it makes sense to do it this way
+    // match_indices: Vec<usize>,
+
+    // remember what is matched for each column
+    // match_indices_individual: Vec<Vec<usize>>,
+
+    
+    nucleo: Nucleo<StringRecord>,
+    running: bool
 }
 
 impl Default for MyApp {
@@ -58,22 +82,32 @@ impl Default for MyApp {
             resizable: false,
             clickable: false,
 
-            // num_rows: 10_000,
-            // scroll_to_row_slider: 0,
-            // scroll_to_row: None,
-            selection: Default::default(),
             checked: false,       
 
-            records: Vec::new(),
-            headers: None
+            // scroll_to_row_slider: 0,
+            // scroll_to_row: None,
+            
+            num_rows: 0,
+            headers: None,
+
+            input_buffer: vec!["".to_owned(); 3],
+
+            // 2 cols.
+            // only using this code once
+            // so far
+            nucleo: Nucleo::new(Config::DEFAULT, Arc::new(||{}), None, 3),
+            running: false
         }
     }
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        // should find some way to cap framerate
+        // if it helps
+        self.running = self.nucleo.tick(10).running;
 
+        egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My egui Application");
 
             ui.vertical(|ui| {
@@ -97,47 +131,69 @@ impl eframe::App for MyApp {
             
             ui.label(format!("Hello '{}', age {}", self.name, self.age));
 
+            let color = match self.running {true => Color32::GREEN, false => Color32::RED};
+
+            ui.colored_label(color, "xxx");
+
             // ui.image(egui::include_image!(
             //     "../../../crates/egui/assets/ferris.png"
             // ));
 
+            use egui_extras::{Size, StripBuilder};
 
-            // conditionally build table
-            if self.records.len() > 0 {
-                use egui_extras::{Size, StripBuilder};
-
-                StripBuilder::new(ui)
-                    .size(Size::remainder().at_least(100.0)) // for the table
-                    .vertical(|mut strip| {
-                        strip.cell(|ui| {
-                            egui::ScrollArea::horizontal().show(ui, |ui| {
-                                self.table_ui(ui);
-                            });
+            StripBuilder::new(ui)
+                .size(Size::remainder().at_least(100.0)) // for the table
+                .vertical(|mut strip| {
+                    strip.cell(|ui| {
+                        egui::ScrollArea::horizontal().show(ui, |ui| {
+                            self.table_ui(ui);
                         });
                     });
-    
-            }
-        });
+                });
+            });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        println!("exiting...");
+        // let n = self.nucleo
+        //     .snapshot()
+        //     .matched_item_count()
+        //     .clamp(0, 100);
+
+        // for item in self.nucleo.snapshot().matched_items(0..n) {
+        //     println!("{:?}", item.data);
+        // }
     }
 }
 
 impl MyApp {
     fn from_path(p: &str) -> Self {
+        let mut new = Self::default();
+
+        // get csv
         let mut rdr = csv::Reader::from_path(p).unwrap();
-        let headers = rdr.headers().unwrap().clone();
 
+        let headers = match rdr.headers() {
+            Ok(h) => Some(h.clone()),
+            Err(_) => None
+        };
 
-        let mut records = Vec::new();
+        let inj = new.nucleo.injector();
+        let mut n = 0;
+        
         for record in rdr.into_records() {
-            records.push(record.unwrap());
+            let rec = record.unwrap();
+            n += 1;
+            inj.push(rec, |value, columns| {
+                columns[0] = value.get(0).expect("damn").into();
+                columns[1] = value.get(1).expect("damn").into();
+                columns[2] = value.get(2).expect("damn").into();
+            });
         }
 
-
-        Self {
-            headers: Some(headers),
-            records: records,
-            ..Default::default()
-        }
+        new.num_rows = n;
+        new.headers = headers;
+        new
     }
 
     fn table_ui(&mut self, ui: &mut egui::Ui) {
@@ -180,16 +236,65 @@ impl MyApp {
                     });
                     header.col(|ui| {
                         ui.strong(headers.get(2).expect("col 2"));
-                    });
-                            
-    
+                    });    
                 }
             })
+
             .body(|body| {
-                // temporary 10 rows
-                body.rows(text_height, 10, |mut row| {
-                    let row_index = row.index();
-                    row.set_selected(self.selection.contains(&row_index));
+                body.rows(text_height, self.num_rows, |mut row| {
+                    let row_index = row.index() as u32;
+                    if row_index == 0 {
+                        // spacers
+                        row.col(|ui| { ui.add_space(ui.available_width()) });
+                        row.col(|ui| { ui.add_space(ui.available_width()) });
+                        row.col(|ui| {
+                            let te = ui.text_edit_singleline(&mut self.input_buffer[0]);
+                            if te.clicked() {}
+                            if te.changed() { 
+                                // find a way to check the type...
+                                // if the buffer's been purely added to, 
+                                // or deleted from or whatev
+                                self.nucleo.pattern
+                                    .reparse(0, self.input_buffer[0].trim(), CaseMatching::Ignore, Normalization::Smart, false);
+                                // double tick
+                                // on this frame
+                                self.nucleo.tick(10);
+                            }
+                        });
+
+                        row.col(|ui| {
+                            let te = ui.text_edit_singleline(&mut self.input_buffer[1]);
+                            if te.clicked() {}
+                            if te.changed() {
+                                self.nucleo.pattern
+                                    .reparse(1, self.input_buffer[1].trim(), CaseMatching::Ignore, Normalization::Smart, false);
+                                self.nucleo.tick(10);
+                            }
+                        });
+                        row.col(|ui| {
+                            let te = ui.text_edit_singleline(&mut self.input_buffer[2]);
+                            if te.clicked() {}
+                            if te.changed() {
+                                self.nucleo.pattern
+                                    .reparse(2, self.input_buffer[2].trim(), CaseMatching::Ignore, Normalization::Smart, false);
+                                self.nucleo.tick(10);
+                            }
+                        });
+
+                        return;
+                    }
+
+                    let res = match self.nucleo.snapshot().get_matched_item(row_index - 1) {
+                        None => return,
+                        Some(_res) => _res
+                    };
+
+                    // i think i can use either the "data" or "matcher columns"
+                    // from res
+                    // i should check to make sure they're the same
+
+                    // hm
+                    // row.set_selected(self.selection.contains(&row_index));
 
                     row.col(|ui| {
                         ui.label(row_index.to_string());
@@ -197,18 +302,15 @@ impl MyApp {
                     row.col(|ui| {
                         ui.checkbox(&mut self.checked, "Click me");
                     });
-
-                    if let Some(rec) = self.records.get(row_index) {
-                        row.col(|ui| {
-                            ui.label(rec.get(0).expect("no value in col 0"));
-                        });
-                        row.col(|ui| {
-                            ui.label(rec.get(1).expect("no value in col 0"));
-                        });
-                        row.col(|ui| {
-                            ui.label(rec.get(2).expect("no value in col 0"));
-                        });
-                    }
+                    row.col(|ui| {
+                        ui.label(res.data.get(0).expect("no value in col 0 (weird)"));
+                    });
+                    row.col(|ui| {
+                        ui.label(res.data.get(1).expect("no value in col 1 (weird)"));
+                    });
+                    row.col(|ui| {
+                        ui.label(res.data.get(2).expect("no value in col 2 (weird)"));
+                    });
 
 
                     // row.col(|ui| {
@@ -224,11 +326,38 @@ impl MyApp {
                     // });
                 
                 });
-
-
             });
     }
+
+
+
+    // note: column is a number that selects a coumn
+    // todo: use the sorting and scoring functions
+
+    // fn search_column(&mut self, column: usize) {
+    //     let needle = self.input_storage[column].as_str();
+
+    //     let mut temp = Vec::<char>::new();
+    //     let mut temp2 = Vec::<char>::new();
+    //     let n = Utf32Str::new(needle, &mut temp2);
+
+
+    //     self.match_indices.clear(); 
+
+    //     for (i, rec) in self.records.iter().enumerate() {
+    //         // note: panics?
+    //         let haystack = &rec[column];
+
+    //         let h = Utf32Str::new(haystack, &mut temp);
+   
+    //         if let Some(_) = self.matcher.substring_match(h, n) {
+    //             self.match_indices.push(i);
+    //         }
+    //     }
+    // }
 }
+
+
 
 fn expanding_content(ui: &mut egui::Ui) {
     let width = ui.available_width().clamp(20.0, 200.0);
@@ -244,3 +373,34 @@ fn expanding_content(ui: &mut egui::Ui) {
 fn long_text(row_index: usize) -> String {
     format!("Row {row_index} has some long text that you may want to clip, or it will take up too much horizontal space!")
 }
+
+// fn intersection(nums: Vec<Vec<usize>>) -> Vec<usize> {
+//     let mut result = nums[0].clone();
+
+//     // ??
+//     for i in 1..nums.len() {
+//         result = nums[i]
+//             .iter()
+//             .filter(|num| {result.contains(*num)})
+//             .map(|n| *n)
+//             .collect();
+//     }
+
+//     result
+// }
+
+
+// fn intersection_a(nums: &Vec<Vec<usize>>) -> Vec<usize> {
+//     let mut result = nums[0].clone();
+
+//     // ??
+//     for i in 1..nums.len() {
+//         result = nums[i]
+//             .iter()
+//             .filter(|num| {result.contains(*num)})
+//             .map(|n| *n)
+//             .collect();
+//     }
+
+//     result
+// }
