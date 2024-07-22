@@ -1,11 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 
+// todo: filter icon
+// rust lib for keybindings/key combos?
+
 use eframe::egui;
 use csv::{self, StringRecord};
-use egui::Color32;
+use egui::{Color32, Context, Event, EventFilter, Modifiers};
 use std::{
-    sync::Arc
+    ops::Not, sync::Arc
 };
 use nucleo::{
     Config, 
@@ -15,7 +18,8 @@ use nucleo::{
 };
 
 
-// i have the feeling that the indices for individual values should be stored in hash maps
+
+
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
@@ -42,32 +46,17 @@ struct MyApp {
     striped: bool,
     resizable: bool,
     clickable: bool,
+    checked: bool,
+    showing_filters: bool,
 
-    num_rows: usize,
     // scroll_to_row_slider: usize,
     // scroll_to_row: Option<usize>,
     
-    //selection: std::collections::HashSet<usize>,
-    
-    checked: bool,
-
-    // records: Vec<StringRecord>,
-
+    num_rows: usize,
     headers: Option<StringRecord>,
 
+    // matching
     input_buffer: Vec<String>,
-
-
-    // matcher: Matcher,
-
-    // indices to include 
-    // idk if it makes sense to do it this way
-    // match_indices: Vec<usize>,
-
-    // remember what is matched for each column
-    // match_indices_individual: Vec<Vec<usize>>,
-
-    
     nucleo: Nucleo<StringRecord>,
     running: bool
 }
@@ -83,12 +72,16 @@ impl Default for MyApp {
             clickable: false,
 
             checked: false,       
+            showing_filters: true,
 
             // scroll_to_row_slider: 0,
             // scroll_to_row: None,
             
+
+            // about data
             num_rows: 0,
             headers: None,
+
 
             input_buffer: vec!["".to_owned(); 3],
 
@@ -106,6 +99,17 @@ impl eframe::App for MyApp {
         // should find some way to cap framerate
         // if it helps
         self.running = self.nucleo.tick(10).running;
+
+        egui::Context::input(ctx, |i| {
+
+            // Ctrl + F
+            if i.key_released(egui::Key::F) {
+                if i.modifiers.matches_logically(Modifiers::CTRL) {
+                    self.showing_filters = !self.showing_filters
+                }
+            }
+        });
+
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("My egui Application");
@@ -127,6 +131,7 @@ impl eframe::App for MyApp {
 
             if ui.button("Increment").clicked() {
                 self.age += 1;
+                self.showing_filters = !self.showing_filters;
             }
             
             ui.label(format!("Hello '{}', age {}", self.name, self.age));
@@ -155,15 +160,9 @@ impl eframe::App for MyApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         println!("exiting...");
-        // let n = self.nucleo
-        //     .snapshot()
-        //     .matched_item_count()
-        //     .clamp(0, 100);
-
-        // for item in self.nucleo.snapshot().matched_items(0..n) {
-        //     println!("{:?}", item.data);
-        // }
     }
+
+
 }
 
 impl MyApp {
@@ -178,6 +177,7 @@ impl MyApp {
             Err(_) => None
         };
 
+        // update nucleo worker
         let inj = new.nucleo.injector();
         let mut n = 0;
         
@@ -243,44 +243,19 @@ impl MyApp {
             .body(|body| {
                 body.rows(text_height, self.num_rows, |mut row| {
                     let row_index = row.index() as u32;
-                    if row_index == 0 {
+
+                    if row_index == 0 && self.showing_filters {
                         // spacers
                         row.col(|ui| { ui.add_space(ui.available_width()) });
                         row.col(|ui| { ui.add_space(ui.available_width()) });
-                        row.col(|ui| {
-                            let te = ui.text_edit_singleline(&mut self.input_buffer[0]);
-                            if te.clicked() {}
-                            if te.changed() { 
-                                // find a way to check the type...
-                                // if the buffer's been purely added to, 
-                                // or deleted from or whatev
-                                self.nucleo.pattern
-                                    .reparse(0, self.input_buffer[0].trim(), CaseMatching::Ignore, Normalization::Smart, false);
-                                // double tick
-                                // on this frame
-                                self.nucleo.tick(10);
-                            }
-                        });
+                        // how woud egui itself do this...
+                        row.col(|ui| { self.search_box(ui, 0) });
+                        row.col(|ui| { self.search_box(ui, 1) });
+                        row.col(|ui| { self.search_box(ui, 2) });
+                        return;
+                    }
 
-                        row.col(|ui| {
-                            let te = ui.text_edit_singleline(&mut self.input_buffer[1]);
-                            if te.clicked() {}
-                            if te.changed() {
-                                self.nucleo.pattern
-                                    .reparse(1, self.input_buffer[1].trim(), CaseMatching::Ignore, Normalization::Smart, false);
-                                self.nucleo.tick(10);
-                            }
-                        });
-                        row.col(|ui| {
-                            let te = ui.text_edit_singleline(&mut self.input_buffer[2]);
-                            if te.clicked() {}
-                            if te.changed() {
-                                self.nucleo.pattern
-                                    .reparse(2, self.input_buffer[2].trim(), CaseMatching::Ignore, Normalization::Smart, false);
-                                self.nucleo.tick(10);
-                            }
-                        });
-
+                    if row_index == 0 && !self.showing_filters {
                         return;
                     }
 
@@ -329,6 +304,42 @@ impl MyApp {
             });
     }
 
+
+
+    /*
+
+                                // find a way to check the type...
+                                // if the buffer's been purely added to, 
+                                // or deleted from or whatev
+
+                                
+                                Context::input(ui.ctx(), |i| {
+
+                                    let evs = &i.events;
+                                    let text = evs.iter().fold(String::new(), |mut text, ev| {
+                                        match ev {
+                                            Event::Paste(t) => {text.push_str(t); return text},
+                                            Event::Text(t) => {text.push_str(t); return text},
+                                            _ => return text
+                                        };
+                                    });
+
+                                    println!("{text}");
+                                    
+                                });
+    */
+
+
+
+    fn search_box(&mut self, ui: &mut egui::Ui, num: usize) {
+        let te = ui.text_edit_singleline(&mut self.input_buffer[num]);
+        if te.clicked() {}
+        if te.changed() {
+            self.nucleo.pattern
+                .reparse(num, self.input_buffer[num].trim(), CaseMatching::Ignore, Normalization::Smart, false);
+            self.nucleo.tick(10);
+        }
+    }
 
 
     // note: column is a number that selects a coumn
